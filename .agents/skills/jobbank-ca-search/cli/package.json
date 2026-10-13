@@ -1,0 +1,19 @@
+{
+  "name": "jobbank-ca-cli",
+  "version": "1.0.0",
+  "description": "CLI for Job Bank Canada / Guichet-Emplois (jobbank.gc.ca) — the Government of Canada's national job board",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "jobbank-ca": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test --timeout 60000",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "^5.4.0"
+  }
+}

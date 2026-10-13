@@ -1,0 +1,20 @@
+{
+  "name": "consortiumlgbt-cli",
+  "version": "1.0.0",
+  "description": "CLI for searching the Consortium of Higher Education LGBT Resource Professionals job board (consortium.lgbt) — US higher-ed LGBTQ+ resource professional roles. No authentication, zero runtime dependencies. Low volume, personal use only.",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "consortiumlgbt-search": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/bun": "1.3.14"
+  }
+}

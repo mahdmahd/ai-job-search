@@ -1,0 +1,20 @@
+{
+  "name": "profellow-cli",
+  "version": "1.0.0",
+  "description": "CLI for searching fellowships and PhD funding on profellow.com — global fellowships board, English. No authentication, zero runtime dependencies. Personal use only (low volume).",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "profellow-search": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/bun": "1.3.14"
+  }
+}

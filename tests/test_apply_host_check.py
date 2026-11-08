@@ -89,6 +89,22 @@ KNOWN_ATS_APEXES = {
 
 
 
+def resolve_portal_skill(url_str: str) -> Path | None:
+    """Resolve a posting URL to its matching installed portal skill directory, if any."""
+    try:
+        parsed = urlparse(url_str)
+        host = (parsed.hostname or "").lower().strip()
+    except Exception:
+        return None
+    if not host:
+        return None
+    for skill in installed_portal_skills():
+        for portal in portal_hosts(skill):
+            if host == portal or host.endswith(f".{portal}"):
+                return skill
+    return None
+
+
 def classify_posting_host(url_str: str, installed_portals: set[str] | None = None) -> tuple[str, str]:
     """Reference implementation of the host provenance rule in /apply Step 1.
 
@@ -124,12 +140,59 @@ def classify_posting_host(url_str: str, installed_portals: set[str] | None = Non
     return "unverified", host
 
 
+class ApplyPostingGateWiringTests(unittest.TestCase):
+    """The posting passes tools/posting_guard.py before Step 1 evaluates it, the
+    component that fetches it has no Edit/Write, and the reviewer returns its
+    research as text for the orchestrator to write."""
+
+    def setUp(self):
+        self.text = APPLY_COMMAND_FILE.read_text(encoding="utf-8")
+        self.step0 = re.search(r"## Step 0: Parse Input(.*?)(?=## Step 1:)", self.text, re.DOTALL).group(1)
+        self.step1 = re.search(r"## Step 1: DRAFTER - Evaluate Fit(.*?)(?=## Step 2:)", self.text, re.DOTALL).group(1)
+        self.step3 = re.search(r"## Step 3: REVIEWER - Research & Critique(.*?)(?=## Step 4:)", self.text, re.DOTALL).group(1)
+        self.step4 = re.search(r"## Step 4: DRAFTER - Revise Based on Feedback(.*?)(?=## Step 5:)", self.text, re.DOTALL).group(1)
+
+    def test_step0_dispatches_posting_fetcher_and_runs_guard(self):
+        self.assertIn("posting-fetcher", self.step0, "a URL posting is fetched by the least-privilege agent")
+        self.assertIn("posting_guard", self.step0, "Step 0 must name the integrity gate")
+        self.assertIn("--text", self.step0, "pasted text is gated too, in text mode")
+        self.assertIn("Portal CLI first", self.step0)  # the escalation order is unchanged
+
+    def test_step1_prints_posting_integrity_line(self):
+        self.assertIn("Posting integrity", self.step1)
+        self.assertIn("Continue with this posting?", self.step1)
+        self.assertLess(
+            self.step1.index("Posting integrity"), self.step1.index("Source host verification"),
+            "the integrity verdict is the first line of the evaluation",
+        )
+
+    def test_step3_dispatches_application_reviewer_and_orchestrator_writes_cache(self):
+        self.assertIn("application-reviewer", self.step3)
+        self.assertNotIn("general-purpose", self.step3)
+        self.assertIn("### Company research (for the cache)", self.step3,
+                      "the reviewer returns the cache as text - it has no Write tool")
+        self.assertIn("company_research/", self.step4, "the orchestrator writes the cache after the reviewer returns")
+
+
 class ApplyHostVerificationSpecTests(unittest.TestCase):
     def setUp(self):
         self.text = APPLY_COMMAND_FILE.read_text(encoding="utf-8")
+        step0_match = re.search(r"## Step 0: Parse Input(.*?)(?=## Step 1:)", self.text, re.DOTALL)
+        self.assertTrue(step0_match, "Step 0 must exist in apply.md")
+        self.step0_text = step0_match.group(1)
         step1_match = re.search(r"## Step 1: DRAFTER - Evaluate Fit(.*?)(?=## Step 2:)", self.text, re.DOTALL)
         self.assertTrue(step1_match, "Step 1 must exist in apply.md")
         self.step1_text = step1_match.group(1)
+
+    def test_step0_documents_portal_cli_detail_before_webfetch(self):
+        self.assertIn("Portal CLI first", self.step0_text)
+        self.assertIn("detail", self.step0_text)
+        self.assertIn("WebFetch fallback", self.step0_text)
+        cli_pos = self.step0_text.find("Portal CLI first")
+        webfetch_pos = self.step0_text.find("WebFetch fallback")
+        self.assertNotEqual(cli_pos, -1)
+        self.assertNotEqual(webfetch_pos, -1)
+        self.assertLess(cli_pos, webfetch_pos, "Portal CLI detail must precede WebFetch in apply.md Step 0")
 
     def test_step1_contains_source_host_verification_heading(self):
         self.assertIn("Source Host Verification", self.step1_text)
@@ -229,11 +292,73 @@ class InstalledPortalsAreVerifiedTests(unittest.TestCase):
             "https://myworkdayjobs.com.phishing.net/login",
             "https://lever.co.attacker.org/apply",
             "https://unknown-board.example.com/posting/123",
+            # Anyone can publish a "job posting" in a GitHub repo or gist. A
+            # contact URL in a portal CLI's User-Agent string once made
+            # github.com an installed-portal host (#633), so pin it here.
+            "https://github.com/acme-careers/jobs/blob/main/README.md",
+            "https://gist.github.com/someone/0123456789abcdef",
         ]
         for url in suspicious:
             tier, host = classify_posting_host(url)
             self.assertEqual(tier, "unverified", f"{url} must fail closed as unverified, got {tier}")
 
+    def test_resolve_portal_skill_maps_all_installed_portal_hosts(self):
+        """Every installed portal skill must resolve URLs for each host it queries (#535)."""
+        skills = installed_portal_skills()
+        self.assertGreater(len(skills), 0, "must discover installed portal skills")
+        for skill in skills:
+            hosts = portal_hosts(skill)
+            self.assertGreater(len(hosts), 0, f"{skill.name} must declare at least one host")
+            for host in hosts:
+                for test_url in (f"https://{host}/posting/123", f"https://sub.{host}/posting/123"):
+                    with self.subTest(skill=skill.name, host=host, url=test_url):
+                        resolved = resolve_portal_skill(test_url)
+                        self.assertIsNotNone(resolved, f"failed to resolve skill for {test_url}")
+                        self.assertEqual(resolved.name, skill.name)
+                        self.assertTrue((resolved / "cli" / "src" / "cli.ts").is_file())
+
+    def test_resolve_portal_skill_returns_none_for_non_portal_urls(self):
+        unrelated = [
+            "https://example.com/posting/123",
+            "https://greenhouse.io/corp/123",
+            "not-a-valid-url",
+        ]
+        for url in unrelated:
+            with self.subTest(url=url):
+                self.assertIsNone(resolve_portal_skill(url))
+
+
+class WebResearchEscalationOrderTests(unittest.TestCase):
+    def setUp(self):
+        self.research_file = REPO / ".claude" / "skills" / "job-application-assistant" / "09-web-research.md"
+        self.text = self.research_file.read_text(encoding="utf-8")
+        match = re.search(r"## Escalation order(.*?)(?=## |\Z)", self.text, re.DOTALL)
+        self.assertTrue(match, "Escalation order section must exist in 09-web-research.md")
+        self.order_text = match.group(1)
+
+    def test_escalation_order_lists_portal_cli_first(self):
+        self.assertIn("Installed portal CLI `detail` command", self.order_text)
+        self.assertIn("WebFetch", self.order_text)
+        portal_pos = self.order_text.find("Installed portal CLI `detail` command")
+        webfetch_pos = self.order_text.find("`WebFetch`")
+        self.assertNotEqual(portal_pos, -1)
+        self.assertNotEqual(webfetch_pos, -1)
+        self.assertLess(portal_pos, webfetch_pos, "Portal CLI detail must precede WebFetch in escalation order")
+
+
+class RankBatchFetchSpecTests(unittest.TestCase):
+    def setUp(self):
+        self.rank_file = REPO / ".claude" / "commands" / "rank.md"
+        self.text = self.rank_file.read_text(encoding="utf-8")
+        match = re.search(r"## Step 2: Batch-Fetch and Score(.*?)(?=## Step 3:)", self.text, re.DOTALL)
+        self.assertTrue(match, "Step 2 must exist in rank.md")
+        self.step2_text = match.group(1)
+
+    def test_rank_step2_documents_portal_cli_detail_fetch(self):
+        self.assertIn("detail", self.step2_text)
+        self.assertIn("09-web-research.md", self.step2_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
